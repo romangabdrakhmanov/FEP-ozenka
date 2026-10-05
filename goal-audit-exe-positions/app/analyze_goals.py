@@ -201,7 +201,10 @@ def read_rows(path, header_row=None):
         wb = load_workbook(path, data_only=True)
         ws = wb[wb.sheetnames[0]]
         raw = [[c for c in r] for r in ws.iter_rows(values_only=True)]
+        wb.close()
     h = find_header(raw, header_row)
+    source_width = max(len(r) for r in raw[h:])
+    source_headers = tuple(raw[h]) + (None,) * (source_width - len(raw[h]))
     idx = map_columns(raw[h])
     missing = [k for k in ("pos", "name") if k not in idx]
     if missing:
@@ -213,7 +216,9 @@ def read_rows(path, header_row=None):
             continue
         out.append(dict(row=n, fio=get("fio"), tab=get("tab"), pos=get("pos"), path=get("path"),
                         name=get("name"), desc=get("desc"), grp=get("grp"), w=get("w"),
-                        gtype=get("gtype"), thr=get("thr")))
+                        gtype=get("gtype"), thr=get("thr"),
+                        source_headers=source_headers,
+                        source_values=tuple(r) + (None,) * (source_width - len(r))))
     return out
 
 # ---------------------------------------------------------------- проверка
@@ -342,7 +347,9 @@ def analyze(rows, progress=None):
                         text=(r["name"] + " | " + r["desc"])[:900],
                         k1=k1, k1r="; ".join(k1p) or ("действие и измеримый порог присутствуют" + (f" ({note})" if note else "")),
                         k2=k2, k2r="; ".join(k2p) or f"вид метрики ({typ}) соответствует уровню {col}",
-                        k3=k3, k3r="; ".join(k3p), rec=rec))
+                        k3=k3, k3r="; ".join(k3p), rec=rec,
+                        source_headers=r.get("source_headers", ()),
+                        source_values=r.get("source_values", ())))
         if progress:
             progress(len(res), len(rows))
     return res, cstat
@@ -351,6 +358,7 @@ def analyze(rows, progress=None):
 
 def write_xlsx(res, cstat, out):
     from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
     wb = Workbook()
     ws = wb.active
@@ -392,6 +400,27 @@ def write_xlsx(res, cstat, out):
     ws.freeze_panes = "C2"
     ws.auto_filter.ref = f"A1:O{ws.max_row}"
     ws.row_dimensions[1].height = 46
+
+    # Исходные столбцы сохраняются справа от отчёта, а не удаляются.
+    # Связь со строкой источника остаётся корректной после отбора должностей.
+    source_headers = next((r["source_headers"] for r in res if r.get("source_headers")), ())
+    if len(H) + len(source_headers) > 16384:
+        raise ValueError("Исходные столбцы и отчёт превышают лимит Excel: 16384 столбца.")
+    for offset, header in enumerate(source_headers, start=len(H) + 1):
+        cell = ws.cell(row=1, column=offset, value=header)
+        if isinstance(header, str):
+            cell.data_type = "s"
+        cell.font = Font(bold=True, color="FFFFFF", size=10)
+        cell.fill = hf
+        cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        cell.border = bd
+        ws.column_dimensions[get_column_letter(offset)].hidden = True
+    for row_number, r in enumerate(res, start=2):
+        for offset, value in enumerate(r.get("source_values", ()), start=len(H) + 1):
+            cell = ws.cell(row=row_number, column=offset, value=value)
+            # Текст CSV, начинающийся с "=", не должен становиться формулой.
+            if isinstance(value, str):
+                cell.data_type = "s"
 
     s = wb.create_sheet("Сводка")
     tot = len(res)
