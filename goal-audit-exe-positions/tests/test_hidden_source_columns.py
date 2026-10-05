@@ -3,6 +3,8 @@ from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
+import sys
+from unittest.mock import MagicMock, patch
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
@@ -42,10 +44,10 @@ class HiddenSourceColumnsTests(unittest.TestCase):
         wb.save(self.input)
         wb.close()
 
-    def export(self, rows, filename="result.xlsx"):
+    def export(self, rows, filename="result.xlsx", excluded_rows=None):
         result, statistics = core.analyze(rows)
         path = self.root / filename
-        core.write_xlsx(result, statistics, path)
+        core.write_xlsx(result, statistics, path, excluded_rows=excluded_rows)
         wb = load_workbook(path)
         self.addCleanup(wb.close)
         return result, wb
@@ -135,6 +137,63 @@ class HiddenSourceColumnsTests(unittest.TestCase):
         self.assertEqual(report.active.cell(3, 5).value, "Производство № 2")
         self.assertEqual(report.active.cell(2, 27).value, full_path)
         self.assertTrue(report.active.column_dimensions["AA"].hidden)
+
+    def test_excluded_sheet_preserves_all_fields_order_and_duplicates(self):
+        rows = core.read_rows(str(self.input))
+        excluded = [rows[0], dict(rows[0])]
+        _, report = self.export([rows[1]], excluded_rows=excluded)
+        sheet = report["Не вошли в оценку"]
+        self.assertEqual(list(sheet.values),
+                         [tuple(self.headers), tuple(self.values[0]), tuple(self.values[0])])
+        self.assertEqual(sheet.freeze_panes, "A2")
+        self.assertEqual(sheet.auto_filter.ref, "A1:K3")
+        for i in range(1, len(self.headers) + 1):
+            self.assertFalse(sheet.column_dimensions[get_column_letter(i)].hidden)
+        self.assertEqual(report.active.max_row, 2)
+        self.assertEqual(report.active.cell(2, 3).value, "Пётр")
+        self.assertEqual(report["Сводка"].cell(2, 2).value, 1)
+        self.assertEqual(report["Сводка"].cell(3, 2).value, 1)
+
+    def test_no_exclusions_produces_header_only_sheet(self):
+        _, report = self.export(core.read_rows(str(self.input)))
+        self.assertEqual(list(report["Не вошли в оценку"].values), [tuple(self.headers)])
+
+    def test_all_goals_excluded_produces_report_with_zero_summary(self):
+        rows = core.read_rows(str(self.input))
+        result, report = self.export([], excluded_rows=rows)
+        self.assertEqual(result, [])
+        self.assertEqual(report.active.max_row, 1)
+        self.assertEqual(report["Сводка"].cell(2, 2).value, 0)
+        self.assertEqual(report["Сводка"].cell(3, 2).value, 0)
+        self.assertEqual(list(report["Не вошли в оценку"].values),
+                         [tuple(self.headers)] + [tuple(row) for row in self.values])
+
+    def test_launcher_passes_excluded_rows_to_export(self):
+        launcher_path = SCRIPT.parent / "exe_launcher.py"
+        spec = importlib.util.spec_from_file_location("exe_launcher", launcher_path)
+        launcher = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"analyze_goals": core}):
+            spec.loader.exec_module(launcher)
+        for allowed in ({"оператор"}, {"несуществующая должность"}):
+            with self.subTest(allowed=allowed):
+                output = self.root / "launcher.xlsx"
+                with (
+                    patch.object(launcher.tk, "Tk", return_value=MagicMock()),
+                    patch.object(launcher, "choose_file", side_effect=["positions.xlsx", str(self.input)]),
+                    patch.object(launcher, "read_positions", return_value=allowed),
+                    patch.object(launcher.filedialog, "asksaveasfilename", return_value=str(output)),
+                    patch.object(launcher.messagebox, "showinfo"),
+                    patch.object(launcher.messagebox, "showerror") as showerror,
+                ):
+                    self.assertEqual(launcher.main(), 0)
+                    showerror.assert_not_called()
+                report = load_workbook(output)
+                try:
+                    expected_excluded = 1 if "оператор" in allowed else 2
+                    self.assertEqual(report["Не вошли в оценку"].max_row, expected_excluded + 1)
+                    self.assertEqual(report["Сводка"].cell(2, 2).value, 2 - expected_excluded)
+                finally:
+                    report.close()
 
 
 if __name__ == "__main__":

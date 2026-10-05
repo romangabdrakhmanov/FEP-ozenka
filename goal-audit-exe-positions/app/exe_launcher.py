@@ -110,10 +110,11 @@ def main():
             'Выберите входной файл с целями сотрудников. Обязательные столбцы: «Должность» и «Наименование цели».'
         )
         all_rows = core.read_rows(goals_file)
+        if not all_rows:
+            raise ValueError('Не удалось прочитать ни одной строки с целями.')
         selected_rows = [row for row in all_rows if normalize_position(row['pos']) in allowed_positions]
-        print(f'Целей до отбора: {len(all_rows)}; после отбора: {len(selected_rows)}; исключено: {len(all_rows) - len(selected_rows)}')
-        if not selected_rows:
-            raise ValueError('После отбора не осталось целей. Проверьте написание должностей в обоих файлах.')
+        excluded_rows = [row for row in all_rows if normalize_position(row['pos']) not in allowed_positions]
+        print(f'Целей до отбора: {len(all_rows)}; после отбора: {len(selected_rows)}; исключено: {len(excluded_rows)}')
 
         result, statistics = core.analyze(selected_rows, progress)
         output = filedialog.asksaveasfilename(
@@ -125,8 +126,12 @@ def main():
         )
         if not output:
             raise RuntimeError('Сохранение отчёта отменено.')
-        core.write_xlsx(result, statistics, output)
-        messagebox.showinfo('Готово', f'Проверено целей: {len(result)}\n\nФайл сохранён:\n{output}', parent=root)
+        core.write_xlsx(result, statistics, output, excluded_rows=excluded_rows)
+        messagebox.showinfo(
+            'Готово',
+            f'Проверено целей: {len(result)}\nНе вошли в оценку: {len(excluded_rows)}\n\nФайл сохранён:\n{output}',
+            parent=root,
+        )
         return 0
     except Exception as error:
         messagebox.showerror('Ошибка', str(error), parent=root)

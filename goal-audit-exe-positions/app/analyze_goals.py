@@ -2,7 +2,7 @@
 """Аудит целей сотрудников по единому каскаду метрик.
 
 Вход: xlsx/csv с целями сотрудников (шапка может быть не в первой строке).
-Выход: xlsx с двумя листами — «Аудит целей» (по строке на цель) и «Сводка».
+Выход: xlsx с листами «Аудит целей», «Сводка» и «Не вошли в оценку».
 
 Три критерия:
   К1 — формула цели (действие + измеримый результат, без абстракций)
@@ -356,7 +356,7 @@ def analyze(rows, progress=None):
 
 # ---------------------------------------------------------------- выгрузка
 
-def write_xlsx(res, cstat, out):
+def write_xlsx(res, cstat, out, excluded_rows=None):
     from openpyxl import Workbook
     from openpyxl.utils import get_column_letter
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -372,6 +372,7 @@ def write_xlsx(res, cstat, out):
     badf = PatternFill("solid", fgColor="FCE4E4")
     thin = Side(style="thin", color="BFBFBF")
     bd = Border(thin, thin, thin, thin)
+    excluded_rows = list(excluded_rows or ())
     ws.append(H)
     for c in ws[1]:
         c.font = Font(bold=True, color="FFFFFF", size=10)
@@ -404,6 +405,9 @@ def write_xlsx(res, cstat, out):
     # Исходные столбцы сохраняются справа от отчёта, а не удаляются.
     # Связь со строкой источника остаётся корректной после отбора должностей.
     source_headers = next((r["source_headers"] for r in res if r.get("source_headers")), ())
+    if not source_headers:
+        source_headers = next((r["source_headers"] for r in excluded_rows
+                               if r.get("source_headers")), ())
     if len(H) + len(source_headers) > 16384:
         raise ValueError("Исходные столбцы и отчёт превышают лимит Excel: 16384 столбца.")
     for offset, header in enumerate(source_headers, start=len(H) + 1):
@@ -431,7 +435,7 @@ def write_xlsx(res, cstat, out):
     for t, k in [("К1. Требует корректировки (формула цели)", "k1"),
                  ("К2. Требует корректировки (уровень каскада)", "k2"),
                  ("К3. Требует корректировки (метрика не найдена в справочнике)", "k3")]:
-        s.append([t, f"{cnt(k)} ({round(100 * cnt(k) / tot)}%)"])
+        s.append([t, f"{cnt(k)} ({round(100 * cnt(k) / tot) if tot else 0}%)"])
     s.append(["Целей без замечаний по всем трём критериям",
               sum(1 for r in res if all(r[k] == "Соответствует" for k in ("k1", "k2", "k3")))])
     s.append(["Методика", "Критерий распределения целей (База+Фокус) в проверку не входит. К3 засчитывается при наличии подобной метрики в справочнике."])
@@ -452,8 +456,9 @@ def write_xlsx(res, cstat, out):
         s.append([g, n])
     s.append([])
     s.append(["Справочная информация по карточкам", "Значение", "", "", ""])
-    s.append(["Среднее число целей в карточке", round(sum(v["n"] for v in cstat.values()) / len(cstat), 1)])
-    s.append(["Максимум целей в карточке", max(v["n"] for v in cstat.values())])
+    s.append(["Среднее число целей в карточке",
+              round(sum(v["n"] for v in cstat.values()) / len(cstat), 1) if cstat else 0])
+    s.append(["Максимум целей в карточке", max((v["n"] for v in cstat.values()), default=0)])
     s.append(["Карточек с более чем 7 целями", sum(1 for v in cstat.values() if v["n"] > 7)])
     from openpyxl.styles import Font as F2
     for c in s[1]:
@@ -463,6 +468,29 @@ def write_xlsx(res, cstat, out):
     s.column_dimensions["B"].width = 18
     for col in "CDE":
         s.column_dimensions[col].width = 18
+
+    excluded = wb.create_sheet("Не вошли в оценку")
+    for column, header in enumerate(source_headers, start=1):
+        cell = excluded.cell(row=1, column=column, value=header)
+        if isinstance(header, str):
+            cell.data_type = "s"
+        cell.font = Font(bold=True, color="FFFFFF", size=10)
+        cell.fill = hf
+        cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        cell.border = bd
+        excluded.column_dimensions[get_column_letter(column)].width = 24
+    # Без анализа, группировки и удаления дублей: полный исходный ряд
+    # для каждой цели, не прошедшей отбор должностей.
+    for row_number, r in enumerate(excluded_rows, start=2):
+        for column, value in enumerate(r["source_values"], start=1):
+            cell = excluded.cell(row=row_number, column=column, value=value)
+            if isinstance(value, str):
+                cell.data_type = "s"
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    excluded.freeze_panes = "A2"
+    excluded.row_dimensions[1].height = 46
+    if source_headers:
+        excluded.auto_filter.ref = f"A1:{get_column_letter(len(source_headers))}{excluded.max_row}"
     wb.save(out)
 
 
