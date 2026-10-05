@@ -342,7 +342,7 @@ def analyze(rows, progress=None):
             rec = " ".join(parts)
 
         res.append(dict(row=r["row"], card=r["card"], fio=r["fio"], pos=r["pos"], col=col, lvl=lvl,
-                        unit=" / ".join([q for q in r["path"].split("/") if q][-2:])[:70],
+                        unit=r["path"],
                         grp=r["grp"] or "—", w=r["w"], fam=fam, metric=metric or "—", typ=typ,
                         text=(r["name"] + " | " + r["desc"])[:900],
                         k1=k1, k1r="; ".join(k1p) or ("действие и измеримый порог присутствуют" + (f" ({note})" if note else "")),

@@ -114,6 +114,28 @@ class HiddenSourceColumnsTests(unittest.TestCase):
         self.assertEqual(ws.cell(2, 19).value, "лишнее поле")
         self.assertEqual(ws.cell(3, 18).value, None)
 
+    def test_visible_department_keeps_full_path_without_truncation(self):
+        full_path = (
+            "Компания/Завод/Производство № 1/"
+            "Цех с длинным наименованием для проверки сохранения полного пути/"
+            "Участок № 5"
+        )
+        self.assertGreater(len(full_path), 70)
+        wb = load_workbook(self.input)
+        ws = wb.active
+        ws.cell(2, 12, "Подразделение")
+        ws.cell(3, 12, full_path)
+        ws.cell(4, 12, "Производство № 2")
+        wb.save(self.input)
+        wb.close()
+        rows = core.read_rows(str(self.input), header_row=2)
+        result, report = self.export(rows)
+        self.assertEqual(result[0]["unit"], full_path)
+        self.assertEqual(report.active.cell(2, 5).value, full_path)
+        self.assertEqual(report.active.cell(3, 5).value, "Производство № 2")
+        self.assertEqual(report.active.cell(2, 27).value, full_path)
+        self.assertTrue(report.active.column_dimensions["AA"].hidden)
+
 
 if __name__ == "__main__":
     unittest.main()
